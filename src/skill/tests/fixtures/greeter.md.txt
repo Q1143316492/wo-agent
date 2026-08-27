@@ -1,0 +1,6 @@
+---
+name: greeter
+description: "测试夹具：问候。"
+---
+
+Say hello when loaded.
