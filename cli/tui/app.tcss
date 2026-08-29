@@ -1,0 +1,42 @@
+Screen {
+    background: $background;
+    layout: vertical;
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 1;
+}
+
+#dock {
+    height: auto;
+    padding: 1 2 1 2;
+    border-top: solid $foreground 12%;
+    background: $background;
+}
+
+#prompt {
+    width: 3;
+    height: 1;
+    color: $primary;
+    content-align: left middle;
+}
+
+#composer {
+    width: 1fr;
+    background: transparent;
+}
+
+#composer > .input--cursor {
+    background: $foreground 50%;
+    color: $background;
+    text-style: none;
+}
+
+#slash {
+    width: 100%;
+}
+
+#hint {
+    height: 1;
+    color: $text-muted;
+    padding: 0 2 1 2;
+    background: $background;
+}

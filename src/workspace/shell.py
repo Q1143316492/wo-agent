@@ -146,20 +146,44 @@ class LocalBashRunner:
             stdin=asyncio.subprocess.DEVNULL,
             **kwargs,
         )
+        stdout = b""
+        timed_out = False
         try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-        except TimeoutError:
-            proc.kill()
-            leftover = b""
             try:
-                leftover, _ = await asyncio.wait_for(proc.communicate(), timeout=2)
-            except (TimeoutError, Exception):
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+            except TimeoutError:
+                timed_out = True
+                proc.kill()
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=1)
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2)
                 except (TimeoutError, Exception):
                     pass
-            text = leftover.decode("utf-8", errors="replace")
-            return BashResult(exit_code=124, output=text, timed_out=True)
+        finally:
+            # Windows Proactor：管道不在 loop 还活着时收掉，退出后 __del__ 会报 Event loop is closed。
+            await _reap_subprocess(proc)
         text = stdout.decode("utf-8", errors="replace")
+        if timed_out:
+            return BashResult(exit_code=124, output=text, timed_out=True)
         code = proc.returncode if proc.returncode is not None else 1
         return BashResult(exit_code=code, output=text, timed_out=False)
+
+
+async def _reap_subprocess(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1)
+        except (TimeoutError, Exception):
+            pass
+    # 必须在 loop 还活着时把 transport._closed 置位，否则 Windows Proactor
+    # 会在 __del__ 里 call_soon，报 Event loop is closed。
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        try:
+            transport.close()
+        except Exception:
+            pass
+    await asyncio.sleep(0)

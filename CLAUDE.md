@@ -6,7 +6,7 @@
 
 ## 包布局
 
-可 import 的包在 `src/`（如 `from llm import …`）；仓库根是 `pyproject.toml` 与 `examples/`，不是包。
+可 import 的包在 `src/`（如 `from llm import …`）；仓库根是 `pyproject.toml`、`cli/` 与 `examples/`。`cli/` 是产品终端，不进 `src/`，不改循环。斜杠命令在 `cli/commands/`（不进模型）；画布在 `cli/tui/`。
 
 ## 架构分层（单向依赖，禁止反向）
 
@@ -64,5 +64,8 @@ python -m venv .venv
 终端真实对话（需设置 `DEEPSEEK_API_KEY`）：
 
 ```sh
-PYTHONUTF8=1 .venv/Scripts/python examples/demo_agent.py
+.venv/Scripts/pip install -e ".[cli]"
+.venv/Scripts/python -m cli
 ```
+
+不用 Textual 的探针：`PYTHONUTF8=1 .venv/Scripts/python examples/demo_agent.py`

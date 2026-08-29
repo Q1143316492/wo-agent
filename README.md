@@ -4,7 +4,7 @@
 
 其他项目可以引用本库；本库不依赖、也不绑定任何宿主工程。
 
-可 import 的代码在 `src/`（例如 `from llm import …`）。仓库根是 `pyproject.toml` 与 `examples/`。
+可 import 的代码在 `src/`（例如 `from llm import …`）。仓库根是 `pyproject.toml`、`cli/` 与 `examples/`。
 
 ## 模块
 
@@ -30,8 +30,19 @@ python -m venv .venv
 .venv/Scripts/python -m pytest
 ```
 
+## CLI
+
+Textual 对话循环。内核仍是 `assemble` + `followup`。`cli/boot.py` 选 Capability，`cli/commands/` 是斜杠命令（不进模型），`cli/tui/` 只画终端。
+
+```sh
+.venv/Scripts/pip install -e ".[cli]"
+.venv/Scripts/python -m cli
+```
+
+需要 `UTAGENT_API_KEY` 或 `DEEPSEEK_API_KEY`。工作区默认进程 cwd（`WO_AGENT_WORKSPACE` 覆盖），会话落在 `.wo-sessions/`。`/help` `/clear` `/quit`。输入 `/` 会弹出补全（Tab 写入，Enter 执行当前项）。
+
 ## 示例
 
 - `examples/demo_deepseek.py` — LLM 适配器
 - `examples/demo_session.py` — 会话事件与 JSONL
-- `examples/demo_agent.py` — 终端 REPL
+- `examples/demo_agent.py` — 终端 REPL（不用 Textual 的探针）
