@@ -53,20 +53,42 @@ from .types import (
 
 DONE = "[DONE]"
 _IMAGE_PLACEHOLDER = "[image not supported by deepseek]"
+_ABORT = object()
+
+
+async def _next_sse_line(lines, signal):
+    """下一行，或取消。阻塞在 ``aiter_lines`` 时也要能被 ``signal`` 打断。"""
+    if signal is None:
+        try:
+            return await anext(lines)
+        except StopAsyncIteration:
+            return None
+    if signal.is_set():
+        return _ABORT
+    read = asyncio.create_task(anext(lines, None))
+    wait = asyncio.create_task(signal.wait())
+    done, pending = await asyncio.wait({read, wait}, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    for task in pending:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    if wait in done:
+        return _ABORT
+    return read.result()
 
 
 async def sse_payloads(resp, signal):
-    """产出解析后的 SSE payload，带显式终止哨兵。
-
-    每项是 ``(kind, data)``，kind 取值：
-    - ``"data"`` — ``data`` 是解析后的 JSON payload dict
-    - ``"done"`` — 收到 ``[DONE]`` 哨兵
-    - ``"abort"`` — ``signal`` 被置位；调用方应停止
-    - ``"malformed"`` — ``data`` 是原始无法解析的行，供诊断用
-    """
-    async for line in resp.aiter_lines():
-        if signal is not None and signal.is_set():
+    """按行切开 HTTP 流。普通行是一段 JSON，最后一行是 ``[DONE]``。"""
+    lines = resp.aiter_lines()
+    while True:
+        line = await _next_sse_line(lines, signal)
+        if line is _ABORT:
             yield ("abort", None)
+            return
+        if line is None:
             return
         if not line.startswith("data:"):
             continue
@@ -161,11 +183,7 @@ def _aborted_finish() -> FinishChunk:
 
 
 class _Translator:
-    """有状态的 wire -> 分片翻译，每个 index 一个打开的块。
-
-    块惰性打开（空的 reasoning 首块不会打开）；``block-end`` / ``usage`` /
-    ``finish`` 延迟到 ``flush()``，保证流总是以恰好一个终止 finish 结束。
-    """
+    """把多行 JSON 攒成一次完整回复。行与行之间要记住已经吐出了哪些字。"""
 
     def __init__(self) -> None:
         self._next_index = 0
@@ -260,6 +278,44 @@ class _Translator:
         return out
 
 
+async def _read_reply(resp, signal) -> AsyncIterator[StreamChunk]:
+    """读模型的流式回复。
+
+    DeepSeek 的响应长这样（一行一个事件）::
+
+        data: {"choices":[{"delta":{"content":"2"}}]}
+        data: {"choices":[{"delta":{"content":"。"}}]}
+        data: [DONE]
+
+    前面的行是还在生成；``[DONE]`` 表示说完了。
+    """
+    if resp.status_code != 200:
+        text = (await resp.aread()).decode("utf-8", "replace")
+        yield _error_finish(
+            f"HTTP {resp.status_code}: {text[:500]}",
+            http_code(resp.status_code),
+            resp.status_code,
+        )
+        return
+
+    translator = _Translator()
+    async for kind, data in sse_payloads(resp, signal):
+        if kind == "data":
+            for chunk in translator.translate(data):
+                yield chunk
+            continue
+        if kind == "done":
+            for chunk in translator.flush():
+                yield chunk
+            return
+        if kind == "abort":
+            yield _aborted_finish()
+            return
+        yield _error_finish("malformed SSE payload", MALFORMED_RESPONSE)
+        return
+    yield _error_finish("SSE stream ended without [DONE]", STREAM_CLOSED)
+
+
 class DeepSeekProvider:
     def __init__(
         self,
@@ -275,35 +331,22 @@ class DeepSeekProvider:
         request: LLMRequest,
         signal: asyncio.Event | None = None,
     ) -> AsyncIterator[StreamChunk]:
+        """发一次请求，把模型的流式回复逐段交出去。失败也走分片，不抛。"""
         body = self._build_body(request)
         headers = {
             "Authorization": f"Bearer {self._config.api_key}",
             "Content-Type": "application/json",
         }
         url = f"{self._config.base_url}/chat/completions"
+        if signal is not None and signal.is_set():
+            yield _aborted_finish()
+            return
         owns_client = self._client is None
         client = self._client if self._client is not None else httpx.AsyncClient(timeout=self._config.timeout)
-        translator = _Translator()
         try:
             async with client.stream("POST", url, json=body, headers=headers) as resp:
-                if resp.status_code != 200:
-                    text = (await resp.aread()).decode("utf-8", "replace")
-                    yield _error_finish(f"HTTP {resp.status_code}: {text[:500]}", http_code(resp.status_code), resp.status_code)
-                    return
-                async for kind, data in sse_payloads(resp, signal):
-                    if kind == "abort":
-                        yield _aborted_finish()
-                        return
-                    if kind == "malformed":
-                        yield _error_finish("malformed SSE payload", MALFORMED_RESPONSE)
-                        return
-                    if kind == "done":
-                        for chunk in translator.flush():
-                            yield chunk
-                        return
-                    for chunk in translator.translate(data):
-                        yield chunk
-            yield _error_finish("SSE stream ended without [DONE]", STREAM_CLOSED)
+                async for chunk in _read_reply(resp, signal):
+                    yield chunk
         finally:
             if owns_client:
                 await client.aclose()

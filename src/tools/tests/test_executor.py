@@ -70,3 +70,23 @@ async def test_empty_arguments_parses_to_empty_dict():
     executor.register(ToolDefinition(name="t", description="", parameters={}, execute=execute))
     result = await executor.execute("t", "")
     assert result.content[0].text == "keys=[]"
+
+
+async def test_execute_binds_cancel_event():
+    import asyncio
+
+    from tools.cancel import tool_cancel
+
+    seen: list[bool] = []
+
+    async def execute(args):
+        ev = tool_cancel()
+        seen.append(ev is not None and ev.is_set() is False)
+        return [TextBlock(text="ok")]
+
+    executor = RegistryToolExecutor()
+    executor.register(ToolDefinition(name="t", description="", parameters={}, execute=execute))
+    cancel = asyncio.Event()
+    await executor.execute("t", "{}", cancel=cancel)
+    assert seen == [True]
+    assert tool_cancel() is None

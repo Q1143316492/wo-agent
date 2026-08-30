@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -15,7 +16,15 @@ if sys.platform == "win32":
     os.environ.setdefault("PYTHONUTF8", "1")
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="wo-agent")
+    parser.add_argument("-c", action="store_const", const="latest", dest="resume", help="续最近一次会话")
+    parser.add_argument("--session", dest="resume", metavar="ID", help="按会话 id 续")
+    return parser.parse_args(argv)
+
+
 def main() -> None:
+    args = parse_args()
     try:
         from textual.app import App  # noqa: F401
     except ImportError:
@@ -30,7 +39,7 @@ def main() -> None:
 
     from cli.tui.app import WoCli
 
-    WoCli().run()
+    WoCli(resume=args.resume).run()
 
 
 if __name__ == "__main__":

@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from llm.types import FinishChunk, ReasoningDelta, StreamChunk, TextDelta, ToolCallDelta
+from llm.types import FinishChunk, ReasoningDelta, StreamChunk, TextDelta
 
-UiKind = Literal["text", "think", "tool", "error"]
+UiKind = Literal["text", "think", "error"]
 
 
 @dataclass(frozen=True)
@@ -21,8 +21,6 @@ def to_ui_event(chunk: StreamChunk) -> UiEvent | None:
         return UiEvent("text", chunk.text)
     if isinstance(chunk, ReasoningDelta) and chunk.text:
         return UiEvent("think", chunk.text)
-    if isinstance(chunk, ToolCallDelta) and chunk.name:
-        return UiEvent("tool", chunk.name)
     if isinstance(chunk, FinishChunk) and chunk.reason.kind == "error":
         failure = chunk.reason.failure
         code = failure.code if failure else "?"

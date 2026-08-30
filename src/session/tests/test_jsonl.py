@@ -120,3 +120,23 @@ def test_foreign_format_version_refused(tmp_path):
 
     with pytest.raises(SessionFormatUnsupportedError):
         store.load(s.id)
+
+
+def test_save_load_preserves_title(tmp_path):
+    store = JsonlSessionStore(tmp_path)
+    s = Session()
+    s.title = "登录页"
+    store.save(s)
+    loaded = store.load(s.id)
+    assert loaded is not None
+    assert loaded.title == "登录页"
+
+
+def test_list_newest_first(tmp_path):
+    store = JsonlSessionStore(tmp_path)
+    a, b = Session(), Session()
+    store.save(a)
+    store.save(b)
+    path_b = tmp_path / f"{b.id}.jsonl"
+    path_b.touch()
+    assert store.list()[0] == b.id

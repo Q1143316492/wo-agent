@@ -212,6 +212,8 @@ class BlockStart:
 
 @dataclass(frozen=True)
 class TextDelta:
+    """回答文本的一小段增量。例如模型吐出 "2"，就是 TextDelta(text="2")。"""
+
     index: int
     text: str
     type: Literal["text-delta"] = "text-delta"

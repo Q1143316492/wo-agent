@@ -1,18 +1,4 @@
-"""Session 事件词汇。
-
-agent 交互的 append-only 日志，参照 dsh-session 的 ``SessionEventMap``：
-每个事实都是一条类型化事件。日志是唯一事实源——模型可见历史由它*派生*，
-从不单独存储（"模型可见 = 必须落日志"）。
-
-三个事件产生模型可见消息（*surface*）：``user/message``、
-``assistant/message``、``tool/result``。其余（turn/step 边界、原始分片、
-``compaction/*``）是 trace/重放数据，绝不进入提示词。
-
-surface 事件可带 ``surface_op``：``append`` 加到表层尾部；
-``SurfaceReplace(start, end)`` 用本节点替换当前表层上从 ``start`` 到
-``end``（含）的节点。日志不删被替换的事件；``derive_messages`` 按折叠后
-的表层投影。``compaction/*`` 本身不能上表层。
-"""
+"""Session.append 能写入的每一条事件。"""
 
 from __future__ import annotations
 

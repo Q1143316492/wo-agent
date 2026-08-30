@@ -1,7 +1,7 @@
 """终端里跑一轮真实的 ReAct agent。
 
-组装：``assemble(provider, [SystemPrompt, Skill, Workspace, Bash, Compaction], options=...)``。
-循环不知道 skill / 工作区 / bash / compaction。工作区根默认 ``examples/sandbox/``，可用 ``WO_AGENT_WORKSPACE`` 覆盖。
+``compose(...)`` 挂能力，再 ``ReactLoopAgent``。循环不知道 skill / 工作区 / bash / compaction。
+工作区根默认 ``examples/sandbox/``，可用 ``WO_AGENT_WORKSPACE`` 覆盖。
 Windows 需要 Git Bash（或 PATH 上的 bash.exe）。
 需要 ``UTAGENT_API_KEY`` 或 ``DEEPSEEK_API_KEY``。续跑设 ``WO_AGENT_SESSION`` 为已有 session id。
 
@@ -19,12 +19,12 @@ from pathlib import Path
 # 未 pip install -e 时也能 import src/ 下的包。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from agent import AgentOptions
-from compose import assemble
+from agent import AgentOptions, ReactLoopAgent
+from compose import compose
 from compaction import CompactionCapability, LlmSummarizer
 from llm.deepseek import DeepSeekConfig, DeepSeekProvider
 from llm.types import FinishChunk, ReasoningDelta, TextDelta, ToolCallDelta
-from session import JsonlSessionStore
+from session import JsonlSessionStore, Session
 from skill import SkillCapability
 from system_prompt import SystemPromptCapability
 from workspace import BashCapability, WorkspaceCapability
@@ -64,23 +64,27 @@ async def main() -> None:
     if resume_id and session is None:
         print(f"session not found: {resume_id}")
         return
+    if session is None:
+        session = Session()
 
-    built = assemble(
-        provider,
-        (
-            SystemPromptCapability(),
-            SkillCapability(SKILLS_DIR),
-            WorkspaceCapability(workspace_root),
-            BashCapability(workspace_root),
-            CompactionCapability(
-                LlmSummarizer(provider, provider_name="deepseek", model="deepseek-v4-flash")
-            ),
+    ctx = compose(
+        SystemPromptCapability(),
+        SkillCapability(SKILLS_DIR),
+        WorkspaceCapability(workspace_root),
+        BashCapability(workspace_root),
+        CompactionCapability(
+            LlmSummarizer(provider, provider_name="deepseek", model="deepseek-v4-flash")
         ),
+    )
+    agent = ReactLoopAgent(
+        session,
+        provider,
         AgentOptions(provider="deepseek", model="deepseek-v4-flash", max_tokens=1024, retry_backoff_s=0.5),
-        session=session,
+        ctx.tools,
+        system_prompt=ctx.system_prompt,
+        compaction=ctx.compaction,
         on_chunk=_on_chunk,
     )
-    ctx, session, agent = built.ctx, built.session, built.agent
 
     print(f"session {session.id}  →  {SESSIONS_DIR / (session.id + '.jsonl')}")
     print(f"workspace {workspace_root.resolve()}")

@@ -1,6 +1,6 @@
 """公开的 Agent 契约。循环与扩展只对这个编程，绝不依赖具体驱动实现（dsh "无特权核心"）。
 
-``followup`` / ``steer`` / ``inject`` 都进 inbox；只有前两个唤醒驱动。
+``followup`` / ``steer`` / ``inject`` / ``enqueue`` 都进 inbox；只有前两个唤醒驱动。
 """
 
 from __future__ import annotations
@@ -42,8 +42,20 @@ class Agent(Protocol):
         """Enqueue a next-step message without waking. Idle agents stay idle."""
         ...
 
-    def cancel(self, cause: str) -> None:
-        """Abort the active run and drop pending inbox messages."""
+    def enqueue(self, text: str) -> None:
+        """Enqueue a next-turn message without waking. A running driver claims it after the current turn."""
+        ...
+
+    def queued(self) -> tuple[tuple[str, str], ...]:
+        """Pending next-turn items as ``(id, text)``, oldest first."""
+        ...
+
+    def take_back(self) -> str | None:
+        """Remove the newest queued next-turn message and return its text."""
+        ...
+
+    def cancel(self, cause: str, *, keep_inbox: bool = False) -> None:
+        """Abort the active run. ``keep_inbox`` leaves queued next-turn messages."""
         ...
 
     async def when_idle(self) -> None:

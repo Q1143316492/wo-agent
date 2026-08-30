@@ -1,6 +1,7 @@
-"""面向模型的 ``read`` / ``write`` / ``edit`` / ``bash``。
+"""面向模型的 ``read`` / ``write`` / ``edit`` / ``bash`` / ``grep`` / ``glob``。
 
 文件三件套只通过 ``WorkspaceStore`` 碰盘。``bash`` 只通过 ``BashRunner`` 起进程。
+``grep`` / ``glob`` 只通过 ``SearchRunner`` 起 ``rg``。
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from llm.types import TextBlock
 from tools import ToolDefinition
 
 from .errors import WorkspaceError
+from .paths import WorkspacePaths
 from .read_render import READ_LIMIT, build_window, format_read_output
 from .shell import (
     DEFAULT_TIMEOUT_S,
@@ -20,6 +22,8 @@ from .shell import (
     format_bash_output,
     truncate_tail,
 )
+from .search import SearchResult, SearchRunner, format_search_output, glob_argv, grep_argv
+from tools.cancel import tool_cancel
 from .text import WorkspaceStore
 
 
@@ -181,9 +185,14 @@ def make_bash_tool(cwd: Path, runner: BashRunner, default_timeout_s: float = DEF
         timeout_s = _optional_timeout(args, default_timeout_s)
         if not cwd.is_dir():
             raise WorkspaceError(f"working directory does not exist: {cwd}", "NOT_FOUND")
-        result = await runner.run(command, cwd, timeout_s)
+        result = await runner.run(command, cwd, timeout_s, tool_cancel())
         trimmed, truncated = truncate_tail(result.output)
-        shown = BashResult(exit_code=result.exit_code, output=trimmed, timed_out=result.timed_out)
+        shown = BashResult(
+            exit_code=result.exit_code,
+            output=trimmed,
+            timed_out=result.timed_out,
+            aborted=result.aborted,
+        )
         return [TextBlock(text=format_bash_output(cwd, shown, truncated))]
 
     return ToolDefinition(
@@ -210,3 +219,124 @@ def make_bash_tool(cwd: Path, runner: BashRunner, default_timeout_s: float = DEF
         },
         execute=execute,
     )
+
+
+def _search_display_path(paths: WorkspacePaths, args: dict) -> str:
+    raw = args.get("path")
+    if raw is None:
+        raw = "."
+    if not isinstance(raw, str):
+        raise WorkspaceError("path must be a string", "INVALID_ARGUMENT")
+    return paths.display(paths.resolve(raw))
+
+
+def _require_pattern(args: dict) -> str:
+    value = args.get("pattern")
+    if not isinstance(value, str) or value == "":
+        raise WorkspaceError("pattern must be a non-empty string", "INVALID_ARGUMENT")
+    return value
+
+
+def _optional_glob(args: dict) -> str | None:
+    value = args.get("glob")
+    if value is None:
+        return None
+    if not isinstance(value, str) or value == "":
+        raise WorkspaceError("glob must be a non-empty string", "INVALID_ARGUMENT")
+    return value
+
+
+async def _run_search(
+    runner: SearchRunner,
+    argv: list[str],
+    cwd: Path,
+    timeout_s: float,
+) -> list:
+    result = await runner.run(argv, cwd, timeout_s, tool_cancel())
+    trimmed, truncated = truncate_tail(result.output)
+    shown = SearchResult(exit_code=result.exit_code, output=trimmed, aborted=result.aborted)
+    return [TextBlock(text=format_search_output(shown, truncated))]
+
+
+def make_grep_tool(
+    paths: WorkspacePaths,
+    runner: SearchRunner,
+    default_timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> ToolDefinition:
+    async def execute(args: dict) -> list:
+        pattern = _require_pattern(args)
+        display = _search_display_path(paths, args)
+        argv = grep_argv(
+            pattern=pattern,
+            path=display,
+            glob=_optional_glob(args),
+            case_insensitive=_optional_bool(args, "case_insensitive", False),
+        )
+        return await _run_search(runner, argv, paths.root, default_timeout_s)
+
+    return ToolDefinition(
+        name="grep",
+        description=(
+            "Search file contents under the workspace root using ripgrep. "
+            "Paths outside the root are rejected. Non-zero exit (no matches) is not an error."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "ripgrep search pattern.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File or directory to search, relative to the workspace root. Defaults to the root.",
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Optional glob filter passed to rg -g.",
+                },
+                "case_insensitive": {
+                    "type": "boolean",
+                    "description": "Case-insensitive search. Defaults to false.",
+                },
+            },
+            "required": ["pattern"],
+        },
+        execute=execute,
+    )
+
+
+def make_glob_tool(
+    paths: WorkspacePaths,
+    runner: SearchRunner,
+    default_timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> ToolDefinition:
+    async def execute(args: dict) -> list:
+        pattern = _require_pattern(args)
+        display = _search_display_path(paths, args)
+        argv = glob_argv(pattern=pattern, path=display)
+        return await _run_search(runner, argv, paths.root, default_timeout_s)
+
+    return ToolDefinition(
+        name="glob",
+        description=(
+            "List files under the workspace root whose names match a glob, using ripgrep --files. "
+            "Paths outside the root are rejected."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob passed to rg -g, for example **/*.py.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to list, relative to the workspace root. Defaults to the root.",
+                },
+            },
+            "required": ["pattern"],
+        },
+        execute=execute,
+    )
+

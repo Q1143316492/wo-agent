@@ -1,10 +1,7 @@
-"""JSONL 持久化后端。
+"""把 Session 写成一个 .jsonl，再读回来。
 
-每个会话一个 JSONL 文件：首行 header（格式版本 + id），随后每行一个事件，
-经 `serialize` 无损序列化。写入是原子的（写临时文件、fsync、改名），崩溃
-不会留下半个文件。加载时，孤儿尾 turn（崩溃在半途）用合成的
-`turn/end { reason: 'interrupted' }` 收尾，保留被中断的执行而不是截断——
-dsh 的崩溃恢复思想。
+save 先写完再改名，避免崩溃留下半个文件。load 时若 turn 开了没结束，
+补一条 turn/end { reason: "interrupted" }：半截执行还在，不当损坏扔掉。
 """
 
 from __future__ import annotations
@@ -33,7 +30,7 @@ class JsonlSessionStore:
         path = self._path(session.id)
         tmp = path.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
-            header = {"type": "session_header", "version": self.FORMAT_VERSION, "id": session.id}
+            header = {"type": "session_header", "version": self.FORMAT_VERSION, "id": session.id, "title": session.title}
             f.write(json.dumps(header, ensure_ascii=False) + "\n")
             for entry in session.events:
                 row = {"seq": entry.seq, "time": entry.time, "event": event_to_dict(entry.event)}
@@ -58,6 +55,7 @@ class JsonlSessionStore:
                         f"{path}: format version {version} is not readable (expected {self.FORMAT_VERSION})"
                     )
                 session = Session(session_id=header["id"])
+                session.title = header.get("title") or ""
                 for line in f:
                     row = json.loads(line)
                     session.append(dict_to_event(row["event"]), time=row.get("time"))
@@ -74,7 +72,9 @@ class JsonlSessionStore:
             path.unlink()
 
     def list(self) -> list[str]:
-        return [p.stem for p in self._dir.glob("*.jsonl")]
+        paths = list(self._dir.glob("*.jsonl"))
+        paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return [p.stem for p in paths]
 
 
 def _repair_interrupted_turn(session: Session) -> None:

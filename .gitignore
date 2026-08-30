@@ -49,3 +49,4 @@ examples/sandbox/*
 !examples/sandbox/.gitkeep
 !examples/sandbox/README.md
 .wo-sessions/
+.vendor/

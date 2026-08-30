@@ -200,6 +200,23 @@ async def test_signal_set_before_start_stops_with_aborted_finish():
         await client.aclose()
 
 
+async def test_signal_aborts_while_waiting_for_next_line():
+    from llm.deepseek import _ABORT, _next_sse_line
+
+    async def slow_lines():
+        yield "data: {\"ok\": 1}"
+        await asyncio.Event().wait()
+        yield "data: [DONE]"
+
+    signal = asyncio.Event()
+    lines = slow_lines().__aiter__()
+    first = await _next_sse_line(lines, signal)
+    assert first.startswith("data:")
+    signal.set()
+    second = await asyncio.wait_for(_next_sse_line(lines, signal), timeout=0.5)
+    assert second is _ABORT
+
+
 async def test_empty_stop_is_emily_response_error():
     provider, client = _provider(_sse([
         {"choices": [{"delta": {}, "index": 0, "finish_reason": "stop"}]},

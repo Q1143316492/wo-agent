@@ -1,6 +1,8 @@
 """bash 工具：假 runner 测契约；有本机 bash 时再测 spawn。"""
 
+import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -18,9 +20,11 @@ class FakeRunner:
         self.result = result or BashResult(exit_code=0, output="ok\n", timed_out=False)
         self.error = error
         self.commands: list[tuple[str, Path, float]] = []
+        self.last_cancel = None
 
-    async def run(self, command: str, cwd: Path, timeout_s: float) -> BashResult:
+    async def run(self, command: str, cwd: Path, timeout_s: float, cancel=None) -> BashResult:
         self.commands.append((command, cwd, timeout_s))
+        self.last_cancel = cancel
         if self.error is not None:
             raise self.error
         return self.result
@@ -38,6 +42,13 @@ def test_format_includes_exit_and_timeout():
     assert "exit: 124" in text
     assert "timed_out: true" in text
     assert "partial" in text
+
+
+def test_format_includes_aborted():
+    result = BashResult(exit_code=130, output="", timed_out=False, aborted=True)
+    text = format_bash_output(Path("/tmp/ws"), result, truncated=False)
+    assert "exit: 130" in text
+    assert "aborted: true" in text
 
 
 async def test_bash_tool_nonzero_exit_is_not_pipeline_error(tmp_path: Path):
@@ -65,6 +76,15 @@ async def test_timeout_argument_forwarded(tmp_path: Path):
     tools.register(make_bash_tool(tmp_path, runner, default_timeout_s=30))
     await tools.execute("bash", json.dumps({"command": "echo x", "timeout": 5}))
     assert runner.commands[0][2] == 5
+
+
+async def test_bash_tool_passes_cancel_event(tmp_path: Path):
+    runner = FakeRunner()
+    tools = RegistryToolExecutor()
+    tools.register(make_bash_tool(tmp_path, runner))
+    cancel = asyncio.Event()
+    await tools.execute("bash", json.dumps({"command": "echo x"}), cancel=cancel)
+    assert runner.last_cancel is cancel
 
 
 def test_bash_capability_separate_from_files(tmp_path: Path):
@@ -107,3 +127,38 @@ async def test_local_timeout(tmp_path: Path):
     result = await runner.run("sleep 8", tmp_path, timeout_s=0.3)
     assert result.timed_out is True
     assert result.exit_code == 124
+
+
+@pytest.mark.skipif(not _has_bash(), reason="no bash on this machine")
+async def test_local_abort_kills_sleep(tmp_path: Path):
+    from workspace.shell import LocalBashRunner
+
+    runner = LocalBashRunner()
+    cancel = asyncio.Event()
+
+    async def abort_soon():
+        await asyncio.sleep(0.2)
+        cancel.set()
+
+    asyncio.create_task(abort_soon())
+    started = time.monotonic()
+    result = await runner.run("sleep 8", tmp_path, timeout_s=30, cancel=cancel)
+    elapsed = time.monotonic() - started
+    assert result.aborted is True
+    assert result.timed_out is False
+    assert result.exit_code == 130
+    assert elapsed < 4
+
+
+@pytest.mark.skipif(not _has_bash(), reason="no bash on this machine")
+async def test_local_already_cancelled_does_not_run(tmp_path: Path):
+    from workspace.shell import LocalBashRunner
+
+    cancel = asyncio.Event()
+    cancel.set()
+    marker = tmp_path / "ran.txt"
+    runner = LocalBashRunner()
+    result = await runner.run("echo x > ran.txt", tmp_path, timeout_s=10, cancel=cancel)
+    assert result.aborted is True
+    assert result.exit_code == 130
+    assert not marker.exists()

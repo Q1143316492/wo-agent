@@ -27,9 +27,9 @@ compose/  →  agent/ → session/ → llm/
 
 - **事件溯源**：`session/` 是 append-only 事件日志，模型可见历史由 `derive_messages()` 派生。"模型可见 = 必须落日志"。这本日志就是审计与复盘的权威；不要为人读另写 `agent_*.log`。`session-stats` / `session-query` / `session-telemetry` 无消费方不做。
 - **分片流**：`llm/` 用 shard 流协议（block-start / delta / block-end / usage / finish）+ 唯一 `BlockAssembler`。
-- **无特权核心**：agent 循环是实现 `Agent` 接口的插件。`followup` / `steer` / `inject` 进 inbox；claim 后才落 `user/message`。宿主领域流程不进循环。
+- **无特权核心**：agent 循环是实现 `Agent` 接口的插件。`followup` / `steer` / `inject` / `enqueue` 进 inbox；claim 后才落 `user/message`。宿主领域流程不进循环。 `cancel(..., keep_inbox=True)` 停当前轮但留下 next-turn。
 - **可重试失败**：`llm.errors.is_retryable`；循环在同一步再请求，不写失败的 assistant/message。
-- **组合层**：插件往 `ctx` 注册；`compose()` 按序挂载；`assemble()` 再接 session 与循环。不引入 Cordis / profile yaml。
+- **组合层**：插件往 `ctx` 注册；`compose()` 按序挂载。session 与循环由宿主构造。不引入 Cordis / profile yaml。
 - **系统提示词**：插件往 `ctx.system_prompt` 注册有序段；循环每步 `assemble()` 后作为请求首条 system 消息。不进 session 日志（由注册表重建，对齐 dsh）。
 - **能力缝**：skill、工作区（含可选 `bash`）、压缩都是选装。`ToolExecutor` 仍是循环的执行缝。压缩挂 `ctx.compaction`；循环在发请求前 `compact_if_needed`。日志不删，`surfaceOp: replace` 改投影。工作区围栏在 `workspace/` 的路径解析里，管不住 `bash`。
 

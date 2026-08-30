@@ -1,10 +1,11 @@
-"""默认 agent 驱动，对齐 dsh agent-loop。
+"""在一个 Session 上跑循环：写日志、调 provider.stream、跑 tools.execute。
 
-无特权核心：`ReactLoopAgent` 实现 `Agent` 契约。会话历史由
-``derive_messages`` 派生。系统提示词每步 assemble 进请求，不写 session。
-inbox 是活体队列：claim 之后才落 ``user/message``。可重试的 LLM 失败在同
-一步内再请求，不新增 assistant/message。压缩在发请求前 ``compact_if_needed``；
-``CONTEXT_WINDOW_EXCEEDED`` 再强制压一次后重试该步。
+followup / steer / inject / enqueue 只把话推进 Inbox，claim 之后才 append
+UserMessageEvent——所以 idle 时 inject，session.events 仍是空的。
+拼请求用 derive_messages()；系统提示词每步 assemble()，不写进 session。
+stream 失败若 is_retryable，同一步再请求，不写 assistant/message。
+有 compaction 时，请求前 compact_if_needed("pressure")；
+CONTEXT_WINDOW_EXCEEDED 再 compact_if_needed("overflow") 后重试该步。
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from llm.assembler import BlockAssembler
 from llm.errors import CONTEXT_WINDOW_EXCEEDED, is_retryable
 from llm.protocol import LLMProvider, LLMRequest
 from llm.types import (
+    LLMMessage,
     LlmCallConfig,
     ModelSource,
     PluginSource,
@@ -49,8 +51,12 @@ from tools import ToolExecutor
 StepEndKind = Literal["completed", "tool-calls", "max-tokens", "error", "aborted"]
 
 
+def _user_text(message: LLMMessage) -> str:
+    return "".join(block.text for block in message.content if getattr(block, "type", None) == "text")
+
+
 class ReactLoopAgent:
-    """Drives one session through turns and ReAct steps."""
+    """把 followup / steer / inject / enqueue 跑成 turn 和 step，并写入 session。"""
 
     def __init__(
         self,
@@ -99,8 +105,21 @@ class ReactLoopAgent:
     def inject(self, text: str) -> None:
         self._inbox.push_step(create_user_message([TextBlock(text=text)]))
 
-    def cancel(self, cause: str) -> None:
-        self._inbox.clear()
+    def enqueue(self, text: str) -> None:
+        self._inbox.push_turn(create_user_message([TextBlock(text=text)]))
+
+    def queued(self) -> tuple[tuple[str, str], ...]:
+        return tuple((message.id, _user_text(message)) for message in self._inbox.peek_turns())
+
+    def take_back(self) -> str | None:
+        message = self._inbox.pop_last_turn()
+        if message is None:
+            return None
+        return _user_text(message)
+
+    def cancel(self, cause: str, *, keep_inbox: bool = False) -> None:
+        if not keep_inbox:
+            self._inbox.clear()
         self._cancel.set()
 
     async def when_idle(self) -> None:
@@ -277,10 +296,16 @@ class ReactLoopAgent:
             if not tool_calls:
                 return "completed"
             for call in tool_calls:
+                if self._cancel.is_set():
+                    return "aborted"
                 session.append(
                     ToolCallEvent(turn=turn, step=step, call_id=call.id, name=call.name, arguments=call.arguments)
                 )
-                result = await self._tools.execute(call.name, call.arguments)
+                result = await self._tools.execute(
+                    call.name, call.arguments, cancel=self._cancel
+                )
                 message = create_tool_result_message(call.id, result.content, is_error=result.is_error)
                 session.append(ToolResultEvent(turn=turn, step=step, message=message))
+                if self._cancel.is_set():
+                    return "aborted"
             return "tool-calls"

@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Protocol
 
 from llm.types import ContentBlock, TextBlock, ToolSchema
 
+from .cancel import bind_tool_cancel, reset_tool_cancel
 from .definition import ToolDefinition
 
 
@@ -34,7 +36,9 @@ class ToolExecutor(Protocol):
     """工具执行缝：给模型看 schema，执行时跑管线。"""
 
     def schemas(self) -> list[ToolSchema]: ...
-    async def execute(self, name: str, arguments: str) -> ToolResult: ...
+    async def execute(
+        self, name: str, arguments: str, cancel: asyncio.Event | None = None
+    ) -> ToolResult: ...
 
 
 def _error_block(message: str) -> list[ContentBlock]:
@@ -57,7 +61,19 @@ class RegistryToolExecutor:
     def schemas(self) -> list[ToolSchema]:
         return [tool.schema for tool in self._tools.values()]
 
-    async def execute(self, name: str, arguments: str) -> ToolResult:
+    async def execute(
+        self,
+        name: str,
+        arguments: str,
+        cancel: asyncio.Event | None = None,
+    ) -> ToolResult:
+        token = bind_tool_cancel(cancel)
+        try:
+            return await self._execute(name, arguments)
+        finally:
+            reset_tool_cancel(token)
+
+    async def _execute(self, name: str, arguments: str) -> ToolResult:
         tool = self._tools.get(name)
         if tool is None:
             return ToolResult(content=_error_block(f"unknown tool: {name}"), is_error=True)

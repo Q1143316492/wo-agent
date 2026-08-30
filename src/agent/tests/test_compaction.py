@@ -16,7 +16,7 @@ class FakeTools:
     def schemas(self):
         return []
 
-    async def execute(self, name, arguments):
+    async def execute(self, name, arguments, cancel=None):
         return ToolResult(content=[TextBlock(text="ok")])
 
 

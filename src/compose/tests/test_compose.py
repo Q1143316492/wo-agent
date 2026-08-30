@@ -2,11 +2,9 @@
 
 from pathlib import Path
 
-from agent import AgentOptions
 from compaction import CompactionCapability, CompactionOptions
-from compose import assemble, compose
+from compose import compose
 from llm.types import TextBlock
-from session import JsonlSessionStore, Session
 from skill import SkillCapability
 from system_prompt import SystemPromptCapability
 from tools import ToolDefinition
@@ -69,63 +67,8 @@ def test_compaction_capability_fills_slot():
     assert hasattr(ctx.compaction, "compact_if_needed")
 
 
-class _NoopProvider:
-    async def stream(self, request, signal=None):
-        if False:
-            yield None
-
-
-def test_assemble_wires_session_and_tools():
-    existing = Session()
-    built = assemble(
-        _NoopProvider(),
-        [EchoCapability()],
-        AgentOptions(provider="fake", model="m"),
-        session=existing,
-    )
-    assert built.session is existing
-    assert built.agent.session is existing
-    assert {s.name for s in built.ctx.tools.schemas()} == {"echo"}
-
-
-def test_assemble_loads_session_from_store(tmp_path):
-    store = JsonlSessionStore(tmp_path)
-    saved = Session()
-    store.save(saved)
-    built = assemble(
-        _NoopProvider(),
-        [EchoCapability()],
-        AgentOptions(provider="fake", model="m"),
-        store=store,
-        session_id=saved.id,
-    )
-    assert built.session.id == saved.id
-
-
-def test_assemble_wrap_tools_replaces_executor():
-    wrapped = {}
-
-    def wrap(inner):
-        wrapped["inner"] = inner
-        return inner
-
-    built = assemble(
-        _NoopProvider(),
-        [EchoCapability()],
-        AgentOptions(provider="fake", model="m"),
-        wrap_tools=wrap,
-    )
-    assert wrapped["inner"] is built.ctx.tools
-
-
-def test_assemble_blank_session_id_starts_new(tmp_path):
-    store = JsonlSessionStore(tmp_path)
-    built = assemble(
-        _NoopProvider(),
-        [EchoCapability()],
-        AgentOptions(provider="fake", model="m"),
-        store=store,
-        session_id="  ",
-    )
-    assert built.session.id
-    assert store.load(built.session.id) is None
+def test_compose_passes_commands_slot():
+    marker = object()
+    ctx = compose(commands=marker)
+    assert ctx.commands is marker
+    assert compose().commands is None

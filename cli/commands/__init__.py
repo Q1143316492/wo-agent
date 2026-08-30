@@ -7,10 +7,13 @@
 from .complete import apply_suggestion, suggest
 from .dispatch import dispatch
 from .parse import parse_line
-from .types import CommandOutcome, CommandSpec, ParsedCommand, Suggestion
+from .registry import CommandRegistry
+from .types import CommandContext, CommandOutcome, CommandSpec, ParsedCommand, Suggestion
 
 __all__ = [
+    "CommandContext",
     "CommandOutcome",
+    "CommandRegistry",
     "CommandSpec",
     "ParsedCommand",
     "Suggestion",

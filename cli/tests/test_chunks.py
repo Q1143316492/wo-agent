@@ -10,8 +10,8 @@ def test_text_delta():
     assert event.text == "你好"
 
 
-def test_tool_name_only():
-    assert to_ui_event(ToolCallDelta(index=0, id="1", name="bash")) is not None
+def test_tool_name_not_a_ui_event():
+    assert to_ui_event(ToolCallDelta(index=0, id="1", name="bash")) is None
     assert to_ui_event(ToolCallDelta(index=0, id="1", arguments_delta="{")) is None
 
 

@@ -1,4 +1,4 @@
-"""工作区能力：文件三件套与可选的本机 ``bash``。
+"""工作区能力：文件三件套、可选 bash、可选 ripgrep。
 
 循环不知道工作区。没把对应 Capability 传进 ``compose()`` 就没有那些刀。
 文件围栏在 ``WorkspaceStore``；``bash`` 的 cwd 钉在同一根上，但围栏管不住命令。
@@ -10,10 +10,19 @@ from pathlib import Path
 
 from system_prompt import PromptSection
 
+from .errors import WorkspaceError
 from .paths import WorkspacePaths
+from .search import LocalRipgrepRunner, SearchRunner
 from .shell import DEFAULT_TIMEOUT_S, BashRunner, LocalBashRunner
 from .text import WorkspaceStore
-from .tools import make_bash_tool, make_edit_tool, make_read_tool, make_write_tool
+from .tools import (
+    make_bash_tool,
+    make_edit_tool,
+    make_glob_tool,
+    make_grep_tool,
+    make_read_tool,
+    make_write_tool,
+)
 
 
 def _file_guidance(root: Path) -> str:
@@ -83,3 +92,41 @@ class BashCapability:
         ctx.system_prompt.section(
             PromptSection(name="workspace:bash", order=111, text=_bash_guidance(self._cwd))
         )
+
+
+def _search_guidance(root: Path) -> str:
+    display = root.as_posix()
+    return (
+        f"Workspace root: {display}. "
+        "Use grep to search file contents and glob to list files by name. "
+        "Both run ripgrep under this root; paths outside the root are rejected. "
+        "Do not use bash ls as the only way to find files."
+    )
+
+
+class SearchCapability:
+    """本机 ripgrep。没列入 compose 名单就没有 grep / glob。"""
+
+    def __init__(
+        self,
+        root: str | Path,
+        runner: SearchRunner | None = None,
+        rg_path: str | Path | None = None,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+    ) -> None:
+        self._paths = WorkspacePaths(root)
+        if runner is not None:
+            self._runner = runner
+        else:
+            if rg_path is None:
+                raise WorkspaceError("rg_path is required when runner is omitted", "RG_NOT_FOUND")
+            self._runner = LocalRipgrepRunner(rg_path)
+        self._timeout_s = timeout_s
+
+    def mount(self, ctx) -> None:
+        ctx.tools.register(make_grep_tool(self._paths, self._runner, self._timeout_s))
+        ctx.tools.register(make_glob_tool(self._paths, self._runner, self._timeout_s))
+        ctx.system_prompt.section(
+            PromptSection(name="workspace:search", order=112, text=_search_guidance(self._paths.root))
+        )
+

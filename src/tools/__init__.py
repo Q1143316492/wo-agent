@@ -4,7 +4,15 @@
 管线。agent 循环通过 `ToolExecutor` 缝使用本包。
 """
 
+from .cancel import bind_tool_cancel, reset_tool_cancel, tool_cancel
 from .definition import ToolDefinition
 from .executor import RegistryToolExecutor, ToolExecutor, ToolGuard, ToolResult
 
-__all__ = ["RegistryToolExecutor", "ToolDefinition", "ToolExecutor", "ToolGuard", "ToolResult"]
+__all__ = [
+    "RegistryToolExecutor",
+    "ToolDefinition",
+    "ToolExecutor",
+    "ToolGuard",
+    "ToolResult",
+    "tool_cancel",
+]

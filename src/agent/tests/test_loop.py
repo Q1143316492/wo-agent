@@ -11,6 +11,7 @@ from llm.types import (
     BlockStart,
     FinishChunk,
     FinishReason,
+    LlmFailure,
     TextBlock,
     TextDelta,
     ToolCallDelta,
@@ -42,7 +43,7 @@ class FakeTools:
     def schemas(self):
         return []
 
-    async def execute(self, name, arguments):
+    async def execute(self, name, arguments, cancel=None):
         self.executed.append((name, arguments))
         return ToolResult(content=[TextBlock(text='{"ok": true}')])
 
@@ -154,6 +155,65 @@ async def test_derived_messages_after_react():
     assert msgs[3].content[0].text == "done"
 
 
+async def test_cancel_aborts_in_flight_stream():
+    started = asyncio.Event()
+
+    class HangProvider:
+        async def stream(self, request, signal=None):
+            started.set()
+            if signal is not None:
+                await signal.wait()
+            yield FinishChunk(
+                reason=FinishReason(kind="aborted", failure=LlmFailure(message="aborted", code="ABORTED"))
+            )
+
+    session = Session()
+    agent = ReactLoopAgent(session, HangProvider(), AgentOptions(provider="fake", model="m"), FakeTools())
+    task = asyncio.create_task(agent.followup("x"))
+    await started.wait()
+    agent.cancel("user")
+    await asyncio.wait_for(task, timeout=1)
+    assert agent.status == "idle"
+    types = _event_types(session)
+    assert types[0] == "turn/start"
+    assert types[-1] == "turn/end"
+    assert "assistant/message" not in types
+
+
+async def test_cancel_aborts_in_flight_tool():
+    started = asyncio.Event()
+
+    class HangTools:
+        def schemas(self):
+            return []
+
+        async def execute(self, name, arguments, cancel=None):
+            started.set()
+            if cancel is not None:
+                await cancel.wait()
+            return ToolResult(content=[TextBlock(text="late")])
+
+    session = Session()
+    provider = FakeProvider([_tool_call_response(), _text_response("nope")])
+    agent = ReactLoopAgent(
+        session, provider, AgentOptions(provider="fake", model="m"), HangTools()
+    )
+    task = asyncio.create_task(agent.followup("x"))
+    await started.wait()
+    agent.cancel("user", keep_inbox=True)
+    await asyncio.wait_for(task, timeout=1)
+    assert agent.status == "idle"
+    assert provider.calls == 1
+    texts = [
+        e.event.message.content[0].content[0].text
+        for e in session.events
+        if e.event.type == "tool/result"
+    ]
+    assert texts == ["late"]
+    ends = [e.event for e in session.events if e.event.type == "turn/end"]
+    assert ends[-1].reason == "aborted"
+
+
 async def test_status_lifecycle():
     session = Session()
     provider = FakeProvider([_text_response("hi")])
@@ -191,6 +251,111 @@ async def test_followup_while_running_queues_next_turn():
     assert users == ["x", "y"]
     assert provider.calls == 2
 
+
+async def test_enqueue_does_not_join_current_step():
+    class SlowProvider:
+        def __init__(self):
+            self.calls = 0
+            self.first_users: list[str] = []
+            self.gate = asyncio.Event()
+
+        async def stream(self, request, signal=None):
+            self.calls += 1
+            if self.calls == 1:
+                self.first_users = [
+                    b.text
+                    for m in request.messages
+                    if m.role == "user"
+                    for b in m.content
+                    if getattr(b, "type", None) == "text"
+                ]
+                await self.gate.wait()
+            yield BlockStart(index=0, block_type="text")
+            yield TextDelta(index=0, text=f"r{self.calls}")
+            yield FinishChunk(reason=FinishReason(kind="stop"))
+
+    session = Session()
+    provider = SlowProvider()
+    agent = ReactLoopAgent(session, provider, AgentOptions(provider="fake", model="m"), FakeTools())
+    task = asyncio.create_task(agent.followup("x"))
+    await asyncio.sleep(0.01)
+    agent.enqueue("y")
+    assert [text for _, text in agent.queued()] == ["y"]
+    provider.gate.set()
+    await asyncio.wait_for(task, timeout=1)
+    users = [e.event.message.content[0].text for e in session.events if e.event.type == "user/message"]
+    assert users == ["x", "y"]
+    assert "y" not in provider.first_users
+    assert provider.calls == 2
+
+
+def test_take_back_pops_newest_queued():
+    agent = ReactLoopAgent(Session(), FakeProvider([]), AgentOptions(provider="fake", model="m"), FakeTools())
+    agent.enqueue("a")
+    agent.enqueue("b")
+    assert agent.take_back() == "b"
+    assert [text for _, text in agent.queued()] == ["a"]
+    assert agent.take_back() == "a"
+    assert agent.take_back() is None
+
+
+async def test_cancel_keep_inbox_runs_queued_next():
+    started = asyncio.Event()
+
+    class HangThenOk:
+        def __init__(self):
+            self.calls = 0
+
+        async def stream(self, request, signal=None):
+            self.calls += 1
+            if self.calls == 1:
+                started.set()
+                if signal is not None:
+                    await signal.wait()
+                yield FinishChunk(
+                    reason=FinishReason(kind="aborted", failure=LlmFailure(message="aborted", code="ABORTED"))
+                )
+                return
+            yield BlockStart(index=0, block_type="text")
+            yield TextDelta(index=0, text="after")
+            yield FinishChunk(reason=FinishReason(kind="stop"))
+
+    session = Session()
+    provider = HangThenOk()
+    agent = ReactLoopAgent(session, provider, AgentOptions(provider="fake", model="m"), FakeTools())
+    task = asyncio.create_task(agent.followup("x"))
+    await started.wait()
+    agent.enqueue("y")
+    agent.cancel("user", keep_inbox=True)
+    await asyncio.wait_for(task, timeout=1)
+    users = [e.event.message.content[0].text for e in session.events if e.event.type == "user/message"]
+    assert users == ["x", "y"]
+    assert provider.calls == 2
+    assert agent.queued() == ()
+
+
+async def test_cancel_drops_queue_by_default():
+    started = asyncio.Event()
+
+    class HangProvider:
+        async def stream(self, request, signal=None):
+            started.set()
+            if signal is not None:
+                await signal.wait()
+            yield FinishChunk(
+                reason=FinishReason(kind="aborted", failure=LlmFailure(message="aborted", code="ABORTED"))
+            )
+
+    session = Session()
+    agent = ReactLoopAgent(session, HangProvider(), AgentOptions(provider="fake", model="m"), FakeTools())
+    task = asyncio.create_task(agent.followup("x"))
+    await started.wait()
+    agent.enqueue("y")
+    agent.cancel("user")
+    await asyncio.wait_for(task, timeout=1)
+    users = [e.event.message.content[0].text for e in session.events if e.event.type == "user/message"]
+    assert users == ["x"]
+    assert agent.queued() == ()
 
 
 async def test_loop_sends_tool_schemas_in_request():

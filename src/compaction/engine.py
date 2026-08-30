@@ -33,7 +33,11 @@ from .summarizer import frame_summary
 
 @dataclass(frozen=True)
 class CompactionOptions:
-    """``threshold_chars`` 触发压力压缩；``retain_chars`` 是原样保留的尾部预算。"""
+    """``threshold_chars`` 触发压力压缩；``retain_chars`` 是原样保留的尾部预算。
+
+    没有 tokenMeter，不能按模型窗口算。24000 / 6000 是初值，仓库里没有换算依据。
+    以后有计量和窗口之后，改成 dsh 默认：阈值 = 窗口 × 0.8，尾部 = 窗口 × 0.16（token）。
+    """
 
     threshold_chars: int = 24000
     retain_chars: int = 6000

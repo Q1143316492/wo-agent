@@ -3,7 +3,8 @@
 import asyncio
 
 from agent import AgentOptions, ReactLoopAgent
-from llm.types import BlockStart, FinishChunk, FinishReason, TextBlock, TextDelta
+from agent.inbox import Inbox
+from llm.types import BlockStart, FinishChunk, FinishReason, TextBlock, TextDelta, create_user_message
 from session import Session
 from tools import ToolResult
 
@@ -12,7 +13,7 @@ class FakeTools:
     def schemas(self):
         return []
 
-    async def execute(self, name, arguments):
+    async def execute(self, name, arguments, cancel=None):
         return ToolResult(content=[TextBlock(text="ok")])
 
 
@@ -68,3 +69,16 @@ async def test_steer_is_claimed_at_next_step():
     users = [e.event.message.content[0].text for e in session.events if e.event.type == "user/message"]
     assert users == ["first", "steer-me"]
     assert len(provider.requests) == 2
+
+
+def test_peek_turns_and_pop_last_turn():
+    box = Inbox()
+    a = create_user_message([TextBlock(text="a")])
+    b = create_user_message([TextBlock(text="b")])
+    box.push_turn(a)
+    box.push_turn(b)
+    assert box.peek_turns() == (a, b)
+    assert box.pop_last_turn() is b
+    assert box.peek_turns() == (a,)
+    assert box.pop_last_turn() is a
+    assert box.pop_last_turn() is None

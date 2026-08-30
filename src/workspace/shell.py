@@ -27,10 +27,17 @@ class BashResult:
     exit_code: int
     output: str
     timed_out: bool
+    aborted: bool = False
 
 
 class BashRunner(Protocol):
-    async def run(self, command: str, cwd: Path, timeout_s: float) -> BashResult: ...
+    async def run(
+        self,
+        command: str,
+        cwd: Path,
+        timeout_s: float,
+        cancel: asyncio.Event | None = None,
+    ) -> BashResult: ...
 
 
 def find_bash(shell_path: str | None = None) -> Path:
@@ -110,6 +117,8 @@ def format_bash_output(cwd: Path, result: BashResult, truncated: bool) -> str:
     header = [f"exit: {result.exit_code}", f"cwd: {display}"]
     if result.timed_out:
         header.append("timed_out: true")
+    if result.aborted:
+        header.append("aborted: true")
     body = result.output
     if truncated:
         body = (body + "\n\n(Output truncated to last "
@@ -119,6 +128,74 @@ def format_bash_output(cwd: Path, result: BashResult, truncated: bool) -> str:
     if body:
         return "\n".join(header) + "\n\n" + body
     return "\n".join(header)
+
+
+def kill_process_tree(pid: int) -> None:
+    """对齐 pi：Windows ``taskkill /T``，Unix 杀进程组。"""
+    if sys.platform == "win32":
+        flags = 0
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            flags = subprocess.CREATE_NO_WINDOW
+        try:
+            subprocess.Popen(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=flags,
+            )
+        except OSError:
+            pass
+        return
+    try:
+        os.killpg(pid, 9)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            os.kill(pid, 9)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+async def await_proc(
+    proc: asyncio.subprocess.Process,
+    timeout_s: float,
+    cancel: asyncio.Event | None,
+) -> tuple[bytes, bool, bool]:
+    """等到进程结束、超时或取消。后两种会杀进程树。返回 (stdout, timed_out, aborted)。"""
+    if cancel is not None and cancel.is_set():
+        if proc.pid:
+            kill_process_tree(proc.pid)
+        stdout = b""
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2)
+        except (TimeoutError, Exception):
+            pass
+        return stdout, False, True
+
+    comm = asyncio.create_task(proc.communicate())
+    abort_task = asyncio.create_task(cancel.wait()) if cancel is not None else None
+    wait_for: set[asyncio.Task] = {comm}
+    if abort_task is not None:
+        wait_for.add(abort_task)
+    done, _pending = await asyncio.wait(wait_for, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED)
+    if abort_task is not None and abort_task not in done:
+        abort_task.cancel()
+    if comm in done:
+        stdout, _ = comm.result()
+        return stdout, False, False
+    if proc.pid:
+        kill_process_tree(proc.pid)
+    stdout = b""
+    timed_out = abort_task is None or abort_task not in done
+    aborted = abort_task is not None and abort_task in done
+    try:
+        stdout, _ = await asyncio.wait_for(comm, timeout=2)
+    except (TimeoutError, asyncio.CancelledError, Exception):
+        comm.cancel()
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2)
+        except (TimeoutError, Exception):
+            pass
+    return stdout, timed_out, aborted
 
 
 class LocalBashRunner:
@@ -131,11 +208,21 @@ class LocalBashRunner:
             self._bash = find_bash(self._shell_path)
         return self._bash
 
-    async def run(self, command: str, cwd: Path, timeout_s: float) -> BashResult:
+    async def run(
+        self,
+        command: str,
+        cwd: Path,
+        timeout_s: float,
+        cancel: asyncio.Event | None = None,
+    ) -> BashResult:
+        if cancel is not None and cancel.is_set():
+            return BashResult(exit_code=130, output="", timed_out=False, aborted=True)
         bash = self.bash()
         kwargs: dict = {}
         if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        elif sys.platform != "win32":
+            kwargs["start_new_session"] = True
         proc = await asyncio.create_subprocess_exec(
             str(bash),
             "-c",
@@ -148,20 +235,14 @@ class LocalBashRunner:
         )
         stdout = b""
         timed_out = False
+        aborted = False
         try:
-            try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-            except TimeoutError:
-                timed_out = True
-                proc.kill()
-                try:
-                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2)
-                except (TimeoutError, Exception):
-                    pass
+            stdout, timed_out, aborted = await await_proc(proc, timeout_s, cancel)
         finally:
-            # Windows Proactor：管道不在 loop 还活着时收掉，退出后 __del__ 会报 Event loop is closed。
             await _reap_subprocess(proc)
         text = stdout.decode("utf-8", errors="replace")
+        if aborted:
+            return BashResult(exit_code=130, output=text, timed_out=False, aborted=True)
         if timed_out:
             return BashResult(exit_code=124, output=text, timed_out=True)
         code = proc.returncode if proc.returncode is not None else 1

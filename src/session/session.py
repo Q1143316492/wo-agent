@@ -107,6 +107,7 @@ class Session:
     def __init__(self, session_id: str | None = None) -> None:
         self._id = session_id or uuid.uuid4().hex
         self._events: list[SessionEvent] = []
+        self.title = ""
 
     @property
     def id(self) -> str:

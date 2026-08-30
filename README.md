@@ -22,6 +22,8 @@
 
 循环不选择能力；选装发生在组装层。上层只依赖下层协议，不依赖具体 Provider 实现。
 
+模块的人读说明在 [`docs/`](docs/)，与 `src/` 包一一对应。
+
 ## 开发
 
 ```sh
@@ -32,7 +34,7 @@ python -m venv .venv
 
 ## CLI
 
-Textual 对话循环。内核仍是 `assemble` + `followup`。`cli/boot.py` 选 Capability，`cli/commands/` 是斜杠命令（不进模型），`cli/tui/` 只画终端。
+Textual 对话循环。内核是 `compose` + `ReactLoopAgent` + `followup`。`cli/boot.py` 选 Capability，`cli/commands/` 是斜杠命令（不进模型），`cli/tui/` 只画终端。
 
 ```sh
 .venv/Scripts/pip install -e ".[cli]"

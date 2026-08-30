@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-# dsh 公开的 kebab-case 技能名语法
 SKILL_NAME = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 
 
@@ -18,7 +17,7 @@ class SkillSummary:
 
     name: str
     description: str
-    provider: str
+    provider: str  # 来源名，如 "filesystem"
 
 
 @dataclass(frozen=True)

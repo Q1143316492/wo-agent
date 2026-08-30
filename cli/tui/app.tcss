@@ -34,6 +34,10 @@ Screen {
     width: 100%;
 }
 
+#queue {
+    height: auto;
+}
+
 #hint {
     height: 1;
     color: $text-muted;
